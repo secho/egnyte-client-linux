@@ -352,6 +352,19 @@ class OAuthHandler:
         
         with open(self.config.TOKEN_FILE, 'w') as f:
             json.dump(token_data, f)
+
+    def revoke_tokens(self):
+        """Remove stored tokens locally"""
+        try:
+            keyring.delete_password("egnyte-desktop", "refresh_token")
+        except Exception:
+            pass
+        
+        try:
+            if self.config.TOKEN_FILE.exists():
+                self.config.TOKEN_FILE.unlink()
+        except Exception:
+            pass
     
     def load_tokens(self) -> Optional[Dict[str, str]]:
         """Load tokens from storage"""

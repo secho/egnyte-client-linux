@@ -149,6 +149,17 @@ def auth_status(ctx):
         sys.exit(1)
 
 
+@auth.command('revoke')
+@click.pass_context
+def auth_revoke(ctx):
+    """Revoke local authentication tokens"""
+    config = ctx.obj['config']
+    auth = OAuthHandler(config)
+    
+    auth.revoke_tokens()
+    click.echo("Local authentication tokens removed.")
+
+
 @cli.group()
 def sync():
     """Synchronization commands"""
