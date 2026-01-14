@@ -81,7 +81,7 @@ class Config:
         Note: Egnyte requires HTTPS redirect URIs. For localhost development,
         you may need to use a tool like ngrok or manually enter the auth code.
         """
-        return self.get('redirect_uri', 'http://localhost:8080/callback')
+        return self.get('redirect_uri', 'https://localhost:8080/callback')
     
     def set_redirect_uri(self, redirect_uri: str):
         """Set OAuth redirect URI"""

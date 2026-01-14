@@ -9,7 +9,7 @@ Even when the redirect URI in Developer Portal matches your config exactly, you 
 
 This is a security validation that Egnyte performs, and it can be problematic with ngrok or other tunneling services.
 
-## Solution: Use Manual Code Entry
+## Solution: Use Localhost Callback (Automatic)
 
 Since Egnyte's hostname validation is causing issues with ngrok, the most reliable solution is to use manual code entry with `https://localhost:8080/callback`.
 
@@ -26,7 +26,7 @@ Since Egnyte's hostname validation is causing issues with ngrok, the most reliab
 egnyte-cli config set redirect_uri https://localhost:8080/callback
 ```
 
-### Step 3: Authenticate with Manual Code Entry
+### Step 3: Authenticate (Automatic Callback)
 
 ```bash
 egnyte-cli auth login
@@ -35,11 +35,11 @@ egnyte-cli auth login
 This will:
 1. Show you an authorization URL
 2. Open it in your browser
-3. You'll see a security warning (because localhost HTTPS has no certificate) - click "Advanced" → "Proceed"
+3. You'll see a security warning (because localhost HTTPS uses a self-signed certificate) - click "Advanced" → "Proceed"
 4. Complete authorization
-5. You'll be redirected to an error page, but the URL will contain the code
-6. Copy the code from the URL
-7. Use it: `egnyte-cli auth login --code YOUR_CODE`
+5. The app receives the callback and finishes login automatically
+
+If the callback server can't start, the CLI will prompt for manual code entry as a fallback.
 
 ## Why This Works
 

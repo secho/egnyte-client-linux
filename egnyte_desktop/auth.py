@@ -5,7 +5,11 @@ import webbrowser
 import http.server
 import socketserver
 import urllib.parse
-from typing import Optional, Dict
+import ssl
+import subprocess
+import shutil
+import threading
+from typing import Optional, Dict, Tuple
 from pathlib import Path
 import keyring
 import requests
@@ -43,15 +47,83 @@ class OAuthHandler:
         url = f"{authorize_url}?{urllib.parse.urlencode(params)}"
         return url
     
-    def start_callback_server(self, port: int = 8080):
-        """Start local HTTP server to receive OAuth callback"""
+    def _parse_redirect_uri(self, redirect_uri: str) -> Tuple[str, str, int, str]:
+        """Parse redirect URI into components"""
+        parsed = urllib.parse.urlparse(redirect_uri)
+        scheme = parsed.scheme or "http"
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if scheme == "https" else 80)
+        path = parsed.path or "/"
+        return scheme, host, port, path
+    
+    def _is_localhost(self, host: str) -> bool:
+        return host in {"localhost", "127.0.0.1", "::1"}
+    
+    def _ensure_localhost_cert(self, cert_path: Path, key_path: Path):
+        """Generate a self-signed certificate for localhost if missing"""
+        if cert_path.exists() and key_path.exists():
+            return
+        
+        openssl = shutil.which("openssl")
+        if not openssl:
+            raise RuntimeError("OpenSSL is required to generate a local HTTPS certificate")
+        
+        cert_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        base_cmd = [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-days",
+            "365",
+            "-subj",
+            "/CN=localhost",
+        ]
+        
+        # Try to include SAN for modern browsers; fall back if unsupported
+        try:
+            subprocess.run(
+                base_cmd + ["-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            subprocess.run(
+                base_cmd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    
+    def start_callback_server(self, redirect_uri: str, timeout: int = 300):
+        """Start local HTTP/HTTPS server to receive OAuth callback"""
+        scheme, host, port, path = self._parse_redirect_uri(redirect_uri)
+        
+        if not self._is_localhost(host):
+            raise RuntimeError("Callback server only supports localhost redirect URIs")
+        
         class CallbackHandler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 parsed = urllib.parse.urlparse(self.path)
+                
+                if parsed.path != path:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                
                 params = urllib.parse.parse_qs(parsed.query)
                 
                 if 'code' in params:
                     self.server.auth_code = params['code'][0]
+                    self.server.auth_event.set()
                     self.send_response(200)
                     self.send_header('Content-type', 'text/html')
                     self.end_headers()
@@ -71,82 +143,100 @@ class OAuthHandler:
             def log_message(self, format, *args):
                 pass  # Suppress server logs
         
-        handler = CallbackHandler
-        handler.server = type('server', (), {})()
+        class ReusableTCPServer(socketserver.TCPServer):
+            allow_reuse_address = True
         
-        with socketserver.TCPServer(("", port), handler) as httpd:
-            httpd.auth_code = None
-            httpd.timeout = 300  # 5 minutes timeout
-            httpd.handle_request()
-            return httpd.auth_code
+        httpd = ReusableTCPServer(("", port), CallbackHandler)
+        httpd.auth_code = None
+        httpd.auth_event = threading.Event()
+        
+        if scheme == "https":
+            cert_dir = self.config.CONFIG_DIR / "certs"
+            cert_path = cert_dir / "localhost.crt"
+            key_path = cert_dir / "localhost.key"
+            self._ensure_localhost_cert(cert_path, key_path)
+            
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+            httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+        
+        def serve():
+            try:
+                httpd.serve_forever(poll_interval=0.25)
+            except Exception:
+                pass
+        
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        
+        if not httpd.auth_event.wait(timeout):
+            httpd.shutdown()
+            httpd.server_close()
+            return None
+        
+        httpd.shutdown()
+        httpd.server_close()
+        return httpd.auth_code
     
-    def authenticate(self, manual_code: Optional[str] = None) -> Dict[str, str]:
+    def authenticate(self, manual_code: Optional[str] = None, allow_manual_fallback: bool = True) -> Dict[str, str]:
         """Complete OAuth2 authentication flow
         
         Args:
             manual_code: Optional authorization code if manually entered
+            allow_manual_fallback: Whether to prompt for manual code entry
         """
         redirect_uri = self.config.get_redirect_uri()
         
-        # Check if using HTTPS redirect (required by Egnyte)
-        if redirect_uri.startswith('https://'):
-            # Use automatic callback server (if HTTPS is properly configured)
-            auth_url = self.get_authorization_url()
-            print(f"Opening browser for authentication...")
-            print(f"If browser doesn't open, visit: {auth_url}")
+        if manual_code:
+            return self.exchange_code_for_tokens(manual_code, redirect_uri_override=redirect_uri)
+        
+        auth_url = self.get_authorization_url()
+        print("Opening browser for authentication...")
+        print(f"If browser doesn't open, visit: {auth_url}")
+        
+        try:
             webbrowser.open(auth_url)
-            
-            # Try to start callback server (only works if HTTPS is properly set up)
-            # For now, fall back to manual entry
+        except Exception:
+            pass
+        
+        # Try automatic local callback when possible
+        auth_code = None
+        scheme, host, _, _ = self._parse_redirect_uri(redirect_uri)
+        if self._is_localhost(host):
             try:
-                auth_code = self.start_callback_server()
+                if scheme == "https":
+                    print("Waiting for secure local callback (https://localhost)...")
+                    print("If you see a certificate warning, choose 'Advanced' and proceed.")
+                else:
+                    print("Waiting for local callback (http://localhost)...")
+                
+                auth_code = self.start_callback_server(redirect_uri)
                 if auth_code:
-                    return self.exchange_code_for_tokens(auth_code)
-            except Exception:
-                pass
-            
-            # Fall through to manual entry
-            print("\n" + "="*60)
-            print("IMPORTANT: Egnyte requires HTTPS for redirect URIs.")
-            print("Please use one of these options:")
-            print("="*60)
-            print("\nOption 1: Manual Code Entry (Recommended)")
-            print("1. Complete authorization in the browser")
-            print("2. After authorization, you'll see an error page")
-            print("3. Copy the 'code' parameter from the URL")
-            print("4. Run: egnyte-cli auth login --code YOUR_CODE")
-            print("\nOption 2: Use HTTPS Redirect URI")
-            print("1. Set up an HTTPS redirect URI (e.g., using ngrok)")
-            print("2. Update redirect URI in Developer Portal")
-            print("3. Update config: egnyte-cli config set redirect_uri https://your-domain.com/callback")
-            print("="*60)
-            
-            if manual_code:
-                auth_code = manual_code
-            else:
-                # Prompt for manual code entry
-                print("\nEnter the authorization code from the URL (or press Ctrl+C to cancel):")
-                auth_code = input("Code: ").strip()
-        else:
-            # HTTP redirect - use manual entry flow
-            auth_url = self.get_authorization_url()
-            print(f"\n{'='*60}")
-            print("Egnyte requires HTTPS redirect URIs.")
-            print("Please follow these steps:")
-            print(f"{'='*60}\n")
-            print(f"1. Open this URL in your browser:")
-            print(f"   {auth_url}\n")
-            print("2. Log in and authorize the application")
-            print("3. After authorization, you'll be redirected to an error page")
-            print("4. Look at the URL - it will contain 'code=...' parameter")
-            print("5. Copy the code value and run:")
-            print("   egnyte-cli auth login --code YOUR_CODE\n")
-            
-            if manual_code:
-                auth_code = manual_code
-            else:
-                print("Or enter the code now (press Ctrl+C to cancel):")
-                auth_code = input("Authorization code: ").strip()
+                    return self.exchange_code_for_tokens(auth_code, redirect_uri_override=redirect_uri)
+            except Exception as e:
+                auth_code = None
+                callback_error = str(e)
+        
+        if not allow_manual_fallback:
+            if 'callback_error' in locals():
+                raise Exception(f"Automatic callback failed: {callback_error}")
+            raise Exception("Automatic callback failed or timed out")
+        
+        # Fall back to manual entry
+        print("\n" + "="*60)
+        print("Automatic callback failed or is unavailable.")
+        if 'callback_error' in locals():
+            print(f"Reason: {callback_error}")
+        print("Please complete the authorization and paste the code below.")
+        print("="*60)
+        print("1. Complete authorization in the browser")
+        print("2. After authorization, you'll see a page with a URL containing 'code=...'")
+        print("3. Copy the code value from the URL")
+        print("4. Paste it here (or run: egnyte-cli auth login --code YOUR_CODE)")
+        print("="*60)
+        
+        print("\nEnter the authorization code from the URL (or press Ctrl+C to cancel):")
+        auth_code = input("Code: ").strip()
         
         if not auth_code:
             raise Exception("Authentication failed: No authorization code provided")

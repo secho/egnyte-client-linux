@@ -7,6 +7,23 @@ When running `egnyte-cli auth login`, you see:
 {"formErrors":[{"code":"INVALID_CALLBACK","msg":"Invalid redirect uri redirect uri must be a valid https url."}]
 ```
 
+## Quick Solution (Automatic Local Callback)
+
+If your redirect URI is set to `https://localhost:8080/callback`, the app now starts a local HTTPS
+callback server and captures the code automatically.
+
+1. **Set redirect URI** (in Developer Portal and config):
+   ```bash
+   egnyte-cli config set redirect_uri https://localhost:8080/callback
+   ```
+2. **Run login**:
+   ```bash
+   egnyte-cli auth login
+   ```
+3. **Approve the browser certificate warning** (self-signed localhost cert).
+
+If the callback server can't start (or OpenSSL isn't available), use the manual method below.
+
 ## Quick Solution (Manual Code Entry)
 
 1. **Run the command**:
