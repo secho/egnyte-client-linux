@@ -16,7 +16,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/egnyte-desktop",
-    packages=find_packages(),
+    packages=find_packages(exclude=["deprecated", "deprecated.*"]),
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: End Users/Desktop",
@@ -41,7 +41,6 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "egnyte-desktop=egnyte_desktop.gui.main:main",
             "egnyte-cli=egnyte_desktop.cli.main:main",
         ],
     },

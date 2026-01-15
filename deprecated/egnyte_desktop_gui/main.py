@@ -25,6 +25,11 @@ def main():
     config = Config()
     file_watcher_holder = {"instance": None}
     
+    # Prefer dark theme by default
+    settings = Gtk.Settings.get_default()
+    if settings:
+        settings.set_property("gtk-application-prefer-dark-theme", True)
+    
     # Check if configured
     if not config.get_domain() or not config.get_client_id():
         print("Please configure the application first:")
@@ -44,7 +49,6 @@ def main():
             sync_engine = SyncEngine(api_client, config)
             file_watcher = FileWatcher(sync_engine, config)
             window = MainWindow(app, config, api_client, sync_engine, file_watcher)
-            file_watcher.start()
             file_watcher_holder["instance"] = file_watcher
         
         if auth.is_authenticated():
