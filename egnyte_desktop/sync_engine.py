@@ -1,3 +1,4 @@
+# 2026 Jan Sechovec from Revolgy and Remangu
 """File synchronization engine with bidirectional sync"""
 
 import hashlib
@@ -18,6 +19,7 @@ class SyncEngine:
     """Handles bidirectional file synchronization"""
     
     def __init__(self, api_client: EgnyteAPIClient, config: Config):
+        """Create a sync engine bound to config and API client."""
         self.api_client = api_client
         self.config = config
         self.sync_state_file = config.CONFIG_DIR / "sync_state.json"
@@ -80,9 +82,10 @@ class SyncEngine:
             logger.debug(f"Error getting remote file info for {remote_path}: {e}")
             return None
     
-    def _should_sync_file(self, local_path: Path, remote_path: str):
+    def _should_sync_file(self, local_path: Path, remote_path: str, policy: Optional[Dict] = None):
         """Determine if file needs syncing and in which direction
-        Returns: (needs_sync, direction) where direction is 'up', 'down', or 'both'
+        Returns: (needs_sync, direction) where direction is 'up', 'down',
+        'delete_local', 'delete_remote', or 'both'
         """
         local_info = self._get_local_file_info(local_path)
         remote_info = self._get_remote_file_info(remote_path)
@@ -92,15 +95,31 @@ class SyncEngine:
         last_state = self.sync_state.get(state_key, {})
         last_local_hash = last_state.get('local_hash')
         last_remote_hash = last_state.get('remote_hash')
+        policy = policy or {}
+        conflict_policy = policy.get('conflict_policy') or self.config.get_sync_conflict_policy()
+        delete_local_on_remote_missing = (
+            policy.get('delete_local_on_remote_missing')
+            if policy.get('delete_local_on_remote_missing') is not None
+            else self.config.get_delete_local_on_remote_missing()
+        )
+        delete_remote_on_local_missing = (
+            policy.get('delete_remote_on_local_missing')
+            if policy.get('delete_remote_on_local_missing') is not None
+            else self.config.get_delete_remote_on_local_missing()
+        )
         
         # File doesn't exist locally
         if not local_info:
             if remote_info:
+                if delete_remote_on_local_missing and last_local_hash:
+                    return (True, 'delete_remote')
                 return (True, 'down')  # Download
             return (False, 'none')  # Both missing
         
         # File doesn't exist remotely
         if not remote_info:
+            if delete_local_on_remote_missing and last_remote_hash:
+                return (True, 'delete_local')
             if local_info and not local_info['is_dir']:
                 return (True, 'up')  # Upload
             return (False, 'none')
@@ -114,7 +133,12 @@ class SyncEngine:
         
         if local_changed and remote_changed:
             # Conflict - both changed
-            # Strategy: newer wins, or user preference
+            if conflict_policy == 'local':
+                return (True, 'up')
+            if conflict_policy == 'remote':
+                return (True, 'down')
+            
+            # default: newest wins
             local_mtime = datetime.fromisoformat(local_info['modified'].replace('Z', '+00:00'))
             remote_mtime = datetime.fromisoformat(remote_info['modified'].replace('Z', '+00:00'))
             
@@ -129,7 +153,7 @@ class SyncEngine:
         
         return (False, 'none')
     
-    def sync_file(self, local_path: Path, remote_path: str) -> Dict[str, any]:
+    def sync_file(self, local_path: Path, remote_path: str, policy: Optional[Dict] = None) -> Dict[str, any]:
         """Sync a single file"""
         result = {
             'local_path': str(local_path),
@@ -140,7 +164,7 @@ class SyncEngine:
         }
         
         try:
-            needs_sync, direction = self._should_sync_file(local_path, remote_path)
+            needs_sync, direction = self._should_sync_file(local_path, remote_path, policy=policy)
             
             if not needs_sync:
                 result['action'] = 'skip'
@@ -167,6 +191,19 @@ class SyncEngine:
                     local_path.mkdir(parents=True, exist_ok=True)
                     result['action'] = 'create_folder'
             
+            elif direction == 'delete_local':
+                if local_path.exists():
+                    if local_path.is_dir():
+                        import shutil
+                        shutil.rmtree(local_path, ignore_errors=True)
+                    else:
+                        local_path.unlink(missing_ok=True)
+                result['action'] = 'delete_local'
+            
+            elif direction == 'delete_remote':
+                self.api_client.delete_file(remote_path)
+                result['action'] = 'delete_remote'
+            
             # Update sync state
             local_info = self._get_local_file_info(local_path)
             remote_info = self._get_remote_file_info(remote_path)
@@ -187,7 +224,7 @@ class SyncEngine:
         
         return result
     
-    def sync_folder(self, local_path: Path, remote_path: str, recursive: bool = True) -> List[Dict]:
+    def sync_folder(self, local_path: Path, remote_path: str, recursive: bool = True, policy: Optional[Dict] = None) -> List[Dict]:
         """Sync a folder recursively"""
         results = []
         
@@ -213,14 +250,14 @@ class SyncEngine:
             if item.get('is_folder', False):
                 if recursive:
                     # Recursively sync subfolder
-                    sub_results = self.sync_folder(item_local_path, item_remote_path, recursive)
+                    sub_results = self.sync_folder(item_local_path, item_remote_path, recursive, policy=policy)
                     results.extend(sub_results)
                 else:
                     # Just create folder
                     item_local_path.mkdir(parents=True, exist_ok=True)
             else:
                 # Sync file
-                result = self.sync_file(item_local_path, item_remote_path)
+                result = self.sync_file(item_local_path, item_remote_path, policy=policy)
                 results.append(result)
         
         # Check for local-only files (upload them)
@@ -232,7 +269,7 @@ class SyncEngine:
                     
                     # Check if already synced
                     if item_remote_path not in remote_paths:
-                        result = self.sync_file(local_item, item_remote_path)
+                        result = self.sync_file(local_item, item_remote_path, policy=policy)
                         results.append(result)
         
         return results
@@ -240,11 +277,11 @@ class SyncEngine:
     def sync_all(self) -> List[Dict]:
         """Sync all configured sync paths"""
         results = []
-        sync_paths = self.config.get_sync_paths()
+        sync_entries = self.config.get_sync_entries()
         
-        for local_path_str, remote_path in sync_paths.items():
+        for local_path_str, entry in sync_entries.items():
             local_path = Path(local_path_str)
-            folder_results = self.sync_folder(local_path, remote_path)
+            folder_results = self.sync_folder(local_path, entry.get('remote', ''), policy=entry.get('policy'))
             results.extend(folder_results)
         
         return results

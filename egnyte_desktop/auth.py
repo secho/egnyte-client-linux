@@ -1,6 +1,8 @@
+# 2026 Jan Sechovec from Revolgy and Remangu
 """OAuth2 authentication for Egnyte API"""
 
 import json
+import time
 import webbrowser
 import http.server
 import socketserver
@@ -20,6 +22,7 @@ class OAuthHandler:
     """Handles OAuth2 authentication flow"""
     
     def __init__(self, config: Config):
+        """Bind auth handler to the current config."""
         self.config = config
         self.callback_server = None
         self.auth_code = None
@@ -348,6 +351,7 @@ class OAuthHandler:
             'access_token': tokens.get('access_token'),
             'expires_in': tokens.get('expires_in'),
             'token_type': tokens.get('token_type', 'Bearer'),
+            'issued_at': int(time.time()),
         }
         
         with open(self.config.TOKEN_FILE, 'w') as f:
@@ -374,14 +378,18 @@ class OAuthHandler:
         try:
             with open(self.config.TOKEN_FILE, 'r') as f:
                 token_data = json.load(f)
-            
+        except (json.JSONDecodeError, IOError, Exception):
+            return None
+        
+        # Load refresh token from keyring if available, but don't fail if keyring isn't usable
+        try:
             refresh_token = keyring.get_password("egnyte-desktop", "refresh_token")
             if refresh_token:
                 token_data['refresh_token'] = refresh_token
-            
-            return token_data
-        except (json.JSONDecodeError, IOError, Exception):
-            return None
+        except Exception:
+            pass
+        
+        return token_data
     
     def get_valid_access_token(self) -> Optional[str]:
         """Get a valid access token, refreshing if necessary"""

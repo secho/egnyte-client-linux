@@ -1,3 +1,4 @@
+# 2026 Jan Sechovec from Revolgy and Remangu
 """Utility functions"""
 
 import os

@@ -1,9 +1,13 @@
+# 2026 Jan Sechovec from Revolgy and Remangu
 """FUSE filesystem mount for Egnyte"""
 
 import os
 import stat
 import errno
 import logging
+import time
+import sys
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -12,68 +16,46 @@ from typing import Dict, List
 if 'FUSE_PYTHON_API' not in os.environ:
     os.environ['FUSE_PYTHON_API'] = '0.1'
 
-# Try fusepy first (better API), fall back to fuse-python
+# Prefer fusepy only; fuse-python is unstable for our use-case
 USE_FUSEPY = False
 try:
-    from fusepy import FUSE, Operations, FuseOSError
+    from fuse import FUSE, Operations, FuseOSError
     USE_FUSEPY = True
-except ImportError:
-    # Fall back to fuse-python
-    try:
-        import fuse
-        # Set API version - use 0.1 for compatibility with fuse-python 1.0.9
-        if 'FUSE_PYTHON_API' not in os.environ:
-            os.environ['FUSE_PYTHON_API'] = '0.1'
-        if not hasattr(fuse, 'fuse_python_api') or fuse.fuse_python_api is None:
-            fuse.fuse_python_api = (0, 1)
-        
-        # Try to import Fuse (note: might be Fuse or FUSE depending on version)
-        # fuse-python 1.0.9 has FUSE (uppercase) as a function, not a class
-        if hasattr(fuse, 'Fuse'):
-            from fuse import Fuse as FuseClass, FuseError
-            FUSE_CLASS = FuseClass
-        elif hasattr(fuse, 'FUSE'):
-            # FUSE might be a function in some versions
-            FUSE_CLASS = fuse.FUSE
-            # Try to get FuseError
-            try:
-                from fuse import FuseError
-            except ImportError:
-                FuseError = Exception  # Fallback
-        else:
-            raise ImportError("fuse module doesn't have Fuse or FUSE")
-        
-        # Create alias for compatibility
-        FUSE = FUSE_CLASS
-        
-        # Check for Operations base class
-        try:
-            from fuse.compat_0_1 import Operations
-        except ImportError:
-            # For newer fuse-python, Operations might not exist
-            # We'll create our own base class
-            class Operations:
-                pass
-        
-        FuseOSError = FuseError  # Alias
-    except ImportError as e:
-        raise ImportError(f"Neither fusepy nor fuse-python working. Error: {e}. Install with: pip install fusepy")
+except ImportError as e:
+    raise ImportError(f"fusepy is required. Install with: pip install fusepy. Error: {e}")
 
 from .api_client import EgnyteAPIClient
 from .config import Config
 from .auth import OAuthHandler
 
 logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 
 class EgnyteFuse(Operations):
     """FUSE filesystem implementation for Egnyte"""
     
     def __init__(self, api_client: EgnyteAPIClient):
+        """Keep caches and API client for FUSE callbacks."""
         self.api_client = api_client
         self.fd = 0
         self.cache = {}  # Cache file contents
-        self.file_attrs = {}  # Cache file attributes
+        self.file_attrs = {}  # path -> (attrs, ts)
+        self.dir_entries = {}  # path -> (entries, ts)
+        self.attr_cache_ttl = 5
+        self.dir_cache_ttl = 5
+        self._ignored_names = {'.Trash', '.Trash-1000', '.xdg-volume-info', 'autorun.inf', 'System Volume Information'}
+        self._rate_limit_fatal = False
+
+    def _abort_on_rate_limit(self, error: Exception):
+        """Stop the mount immediately on 429 to avoid request storms."""
+        if "429" in str(error):
+            if not self._rate_limit_fatal:
+                self._rate_limit_fatal = True
+                logger.error("Egnyte rate limit reached (HTTP 429).")
+                logger.error("Aborting mount to avoid request storms. Please retry later or lower request rate.")
+            os._exit(1)
     
     def __call__(self, operation: str, *args, **kwargs):
         """Make the object callable for fuse-python API compatibility"""
@@ -86,8 +68,15 @@ class EgnyteFuse(Operations):
     
     def getattr(self, path: str, fh=None):
         """Get file attributes"""
-        if path in self.file_attrs:
-            return self.file_attrs[path]
+        basename = os.path.basename(path)
+        if basename in self._ignored_names:
+            raise FuseOSError(errno.ENOENT)
+        
+        cached = self.file_attrs.get(path)
+        if cached:
+            attrs, ts = cached
+            if time.monotonic() - ts < self.attr_cache_ttl:
+                return attrs
         
         try:
             if path == '/':
@@ -121,9 +110,10 @@ class EgnyteFuse(Operations):
                         'st_atime': 0,
                     }
             
-            self.file_attrs[path] = attrs
+            self.file_attrs[path] = (attrs, time.monotonic())
             return attrs
         except Exception as e:
+            self._abort_on_rate_limit(e)
             # Log only if it's not a 404 (file not found is expected for special files)
             if '404' not in str(e):
                 logger.debug(f"Error getting attributes for {path}: {e}")
@@ -136,6 +126,12 @@ class EgnyteFuse(Operations):
         Note: For fuse-python, this should return a list, not a generator
         """
         try:
+            cached = self.dir_entries.get(path)
+            if cached:
+                entries, ts = cached
+                if time.monotonic() - ts < self.dir_cache_ttl:
+                    return entries
+
             if path == '/':
                 items = self.api_client.list_folder('/')
             else:
@@ -145,18 +141,34 @@ class EgnyteFuse(Operations):
             entries = ['.', '..']
             for item in items:
                 name = item.get('name', '')
-                if name:  # Skip empty names
-                    entries.append(name)
+                if not name or name in self._ignored_names:
+                    continue
+                entries.append(name)
             
+            self.dir_entries[path] = (entries, time.monotonic())
             return entries
         except Exception as e:
+            self._abort_on_rate_limit(e)
             logger.error(f"Error reading directory {path}: {e}")
             # Return at least . and .. on error
             return ['.', '..']
+
+    def _is_egnyte_path(self, path: str) -> bool:
+        """Return True for valid Egnyte paths we want to handle."""
+        # Only allow Egnyte namespace paths, ignore other special files
+        if not path.startswith('/'):
+            return False
+        # Prevent calls like /.Trash or /.xdg-volume-info
+        basename = os.path.basename(path)
+        if basename in self._ignored_names:
+            return False
+        return True
     
     def read(self, path: str, size: int, offset: int, fh):
         """Read file content"""
         try:
+            if not self._is_egnyte_path(path):
+                raise FuseOSError(errno.ENOENT)
             # Check cache first
             if path in self.cache:
                 data = self.cache[path]
@@ -174,6 +186,8 @@ class EgnyteFuse(Operations):
     def write(self, path: str, data: bytes, offset: int, fh):
         """Write file content"""
         try:
+            if not self._is_egnyte_path(path):
+                raise FuseOSError(errno.ENOENT)
             # For simplicity, we'll upload the entire file after write
             # In a production system, you'd want to handle partial writes better
             # For now, we'll just cache the write and upload on release
@@ -196,6 +210,8 @@ class EgnyteFuse(Operations):
     def create(self, path: str, mode, fi=None):
         """Create a new file"""
         try:
+            if not self._is_egnyte_path(path):
+                raise FuseOSError(errno.ENOENT)
             # Create empty file in cache
             self.cache[path] = b''
             self.file_attrs[path] = {
@@ -214,6 +230,8 @@ class EgnyteFuse(Operations):
     def mkdir(self, path: str, mode):
         """Create a directory"""
         try:
+            if not self._is_egnyte_path(path):
+                raise FuseOSError(errno.ENOENT)
             self.api_client.create_folder(path)
             self.file_attrs[path] = {
                 'st_mode': stat.S_IFDIR | 0o755,
@@ -230,6 +248,8 @@ class EgnyteFuse(Operations):
     def unlink(self, path: str):
         """Delete a file"""
         try:
+            if not self._is_egnyte_path(path):
+                raise FuseOSError(errno.ENOENT)
             self.api_client.delete_file(path)
             if path in self.cache:
                 del self.cache[path]
@@ -242,6 +262,8 @@ class EgnyteFuse(Operations):
     def rmdir(self, path: str):
         """Remove a directory"""
         try:
+            if not self._is_egnyte_path(path):
+                raise FuseOSError(errno.ENOENT)
             self.api_client.delete_file(path)
             if path in self.file_attrs:
                 del self.file_attrs[path]
@@ -299,6 +321,8 @@ def mount_egnyte(mount_point: str, config: Config, api_client: EgnyteAPIClient, 
             str(mount_path),
             foreground=foreground,
             nothreads=True,
+            fsname="egnyte",
+            subtype="egnyte",
             allow_other=False,
         )
     else:

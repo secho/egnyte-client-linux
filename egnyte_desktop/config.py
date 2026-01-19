@@ -1,3 +1,4 @@
+# 2026 Jan Sechovec from Revolgy and Remangu
 """Configuration management for Egnyte Desktop Client"""
 
 import os
@@ -89,17 +90,63 @@ class Config:
     
     def get_sync_paths(self) -> Dict[str, str]:
         """Get configured sync paths (local -> remote)"""
-        return self.get('sync_paths', {})
+        sync_paths = self.get('sync_paths', {})
+        # Backwards compatibility: values may be remote string or entry dict
+        result: Dict[str, str] = {}
+        for local_path, value in sync_paths.items():
+            if isinstance(value, dict):
+                result[local_path] = value.get('remote', '')
+            else:
+                result[local_path] = value
+        return result
+
+    def get_sync_entries(self) -> Dict[str, Dict]:
+        """Get sync entries (local -> {remote, policy})"""
+        sync_paths = self.get('sync_paths', {})
+        entries: Dict[str, Dict] = {}
+        for local_path, value in sync_paths.items():
+            if isinstance(value, dict):
+                remote = value.get('remote', '')
+                policy = value.get('policy', {}) or {}
+            else:
+                remote = value
+                policy = {}
+            entries[local_path] = {'remote': remote, 'policy': policy}
+        return entries
+
+    def get_sync_conflict_policy(self) -> str:
+        """Get conflict policy: newest | local | remote"""
+        return self.get('sync_conflict_policy', 'newest')
+
+    def get_delete_local_on_remote_missing(self) -> bool:
+        """Delete local file if removed remotely"""
+        return bool(self.get('sync_delete_local_on_remote_missing', False))
+
+    def get_delete_remote_on_local_missing(self) -> bool:
+        """Delete remote file if removed locally"""
+        return bool(self.get('sync_delete_remote_on_local_missing', False))
     
     def add_sync_path(self, local_path: str, remote_path: str):
         """Add a sync path"""
-        sync_paths = self.get_sync_paths()
-        sync_paths[local_path] = remote_path
+        sync_paths = self.get('sync_paths', {})
+        sync_paths[local_path] = {'remote': remote_path, 'policy': {}}
         self.set('sync_paths', sync_paths)
     
     def remove_sync_path(self, local_path: str):
         """Remove a sync path"""
-        sync_paths = self.get_sync_paths()
+        sync_paths = self.get('sync_paths', {})
         sync_paths.pop(local_path, None)
+        self.set('sync_paths', sync_paths)
+
+    def set_sync_path_policy(self, local_path: str, policy: Dict):
+        """Update policy for a sync path"""
+        sync_paths = self.get('sync_paths', {})
+        entry = sync_paths.get(local_path, {})
+        if isinstance(entry, dict):
+            entry.setdefault('remote', '')
+            entry['policy'] = policy
+            sync_paths[local_path] = entry
+        else:
+            sync_paths[local_path] = {'remote': entry, 'policy': policy}
         self.set('sync_paths', sync_paths)
 

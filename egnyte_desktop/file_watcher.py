@@ -1,3 +1,4 @@
+# 2026 Jan Sechovec from Revolgy and Remangu
 """File system watcher for automatic sync on local changes"""
 
 import time
@@ -15,9 +16,10 @@ logger = logging.getLogger(__name__)
 class SyncFileHandler(FileSystemEventHandler):
     """Handles file system events and triggers sync"""
     
-    def __init__(self, sync_engine: SyncEngine, sync_paths: dict, debounce_seconds: float = 2.0):
+    def __init__(self, sync_engine: SyncEngine, sync_entries: dict, debounce_seconds: float = 2.0):
+        """Track changes for a set of local sync roots."""
         self.sync_engine = sync_engine
-        self.sync_paths = sync_paths
+        self.sync_entries = sync_entries
         self.debounce_seconds = debounce_seconds
         self.pending_changes = {}  # path -> timestamp
         self.sync_callback: Optional[Callable] = None
@@ -26,19 +28,21 @@ class SyncFileHandler(FileSystemEventHandler):
         """Set callback to be called when sync is triggered"""
         self.sync_callback = callback
     
-    def _get_remote_path(self, local_path: Path) -> Optional[str]:
-        """Get remote path for a local path"""
+    def _get_remote_path(self, local_path: Path) -> Optional[tuple]:
+        """Get remote path and policy for a local path"""
         local_str = str(local_path)
         
         # Find matching sync path
-        for sync_local, sync_remote in self.sync_paths.items():
+        for sync_local, entry in self.sync_entries.items():
             sync_local_path = Path(sync_local)
             try:
                 relative = local_path.relative_to(sync_local_path)
                 # Convert to forward slashes for remote path
                 relative_str = str(relative).replace('\\', '/')
-                remote_path = f"{sync_remote.rstrip('/')}/{relative_str}"
-                return remote_path.replace('//', '/')
+                remote_base = entry.get('remote', '') if isinstance(entry, dict) else entry
+                remote_path = f"{remote_base.rstrip('/')}/{relative_str}"
+                policy = entry.get('policy', {}) if isinstance(entry, dict) else {}
+                return remote_path.replace('//', '/'), policy
             except ValueError:
                 # local_path is not relative to sync_local_path
                 continue
@@ -47,9 +51,10 @@ class SyncFileHandler(FileSystemEventHandler):
     
     def _schedule_sync(self, local_path: Path):
         """Schedule a sync operation with debouncing"""
-        remote_path = self._get_remote_path(local_path)
-        if not remote_path:
+        remote_tuple = self._get_remote_path(local_path)
+        if not remote_tuple:
             return
+        remote_path, policy = remote_tuple
         
         # Debounce: only sync if no changes for debounce_seconds
         now = time.time()
@@ -65,11 +70,11 @@ class SyncFileHandler(FileSystemEventHandler):
                 try:
                     if local_path.exists():
                         if local_path.is_file():
-                            result = self.sync_engine.sync_file(local_path, remote_path)
+                            result = self.sync_engine.sync_file(local_path, remote_path, policy=policy)
                             logger.info(f"Auto-synced {local_path}: {result['action']}")
                         elif local_path.is_dir():
                             # For directories, sync the folder
-                            self.sync_engine.sync_folder(local_path, remote_path, recursive=False)
+                            self.sync_engine.sync_folder(local_path, remote_path, recursive=False, policy=policy)
                             logger.info(f"Auto-synced folder {local_path}")
                     
                     if self.sync_callback:
@@ -114,6 +119,7 @@ class FileWatcher:
     """Watches file system for changes and triggers sync"""
     
     def __init__(self, sync_engine: SyncEngine, config):
+        """Initialize watcher with config-driven paths."""
         self.sync_engine = sync_engine
         self.config = config
         self.observer = Observer()
@@ -122,15 +128,15 @@ class FileWatcher:
     
     def start(self, sync_callback: Optional[Callable] = None):
         """Start watching configured sync paths"""
-        sync_paths = self.config.get_sync_paths()
+        sync_entries = self.config.get_sync_entries()
         
-        for local_path_str, remote_path in sync_paths.items():
+        for local_path_str, entry in sync_entries.items():
             local_path = Path(local_path_str)
             if not local_path.exists():
                 logger.warning(f"Sync path does not exist: {local_path}")
                 continue
             
-            handler = SyncFileHandler(self.sync_engine, {local_path_str: remote_path})
+            handler = SyncFileHandler(self.sync_engine, {local_path_str: entry})
             if sync_callback:
                 handler.set_sync_callback(sync_callback)
             

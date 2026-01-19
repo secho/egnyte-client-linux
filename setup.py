@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 2026 Jan Sechovec from Revolgy and Remangu
 """Setup script for Egnyte Desktop Client"""
 
 from setuptools import setup, find_packages

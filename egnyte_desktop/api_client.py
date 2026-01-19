@@ -1,3 +1,4 @@
+# 2026 Jan Sechovec from Revolgy and Remangu
 """Egnyte API client with rate limiting and efficient operations"""
 
 import time
@@ -12,9 +13,10 @@ from .auth import OAuthHandler
 
 
 class RateLimiter:
-    """Rate limiter for API calls (2 QPS default)"""
+    """Rate limiter for API calls (10 QPS default)"""
     
-    def __init__(self, qps: float = 2.0):
+    def __init__(self, qps: float = 10.0):
+        """Initialize limiter with a target QPS."""
         self.qps = qps
         self.min_interval = 1.0 / qps
         self.last_call_time = 0
@@ -37,11 +39,14 @@ class EgnyteAPIClient:
     """Client for Egnyte API with rate limiting"""
     
     def __init__(self, config: Config, auth: OAuthHandler):
+        """Create a client bound to config and auth."""
         self.config = config
         self.auth = auth
         self.rate_limiter = RateLimiter(config.RATE_LIMIT_QPS)
         self.domain = config.get_domain()
         self.base_url = f"https://{self.domain}.egnyte.com"
+        self.session = requests.Session()
+        self.known_folders = set()
     
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers with authentication"""
@@ -56,25 +61,44 @@ class EgnyteAPIClient:
     
     def _request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """Make API request with rate limiting and error handling"""
-        self.rate_limiter.wait_if_needed()
-        
         url = f"{self.base_url}{endpoint}"
-        headers = self._get_headers()
-        headers.update(kwargs.pop('headers', {}))
+        retries = 5
+        backoff = 0.5
         
-        response = requests.request(method, url, headers=headers, **kwargs)
-        
-        # Handle token refresh on 401
-        if response.status_code == 401:
-            tokens = self.auth.load_tokens()
-            if tokens and 'refresh_token' in tokens:
-                self.auth.refresh_access_token(tokens['refresh_token'])
-                # Retry once
-                headers = self._get_headers()
-                headers.update(kwargs.pop('headers', {}))
-                response = requests.request(method, url, headers=headers, **kwargs)
+        for attempt in range(retries):
+            self.rate_limiter.wait_if_needed()
+            
+            headers = self._get_headers()
+            headers.update(kwargs.pop('headers', {}))
+            
+            response = self.session.request(method, url, headers=headers, **kwargs)
+            
+            # Handle token refresh on 401
+            if response.status_code == 401:
+                tokens = self.auth.load_tokens()
+                if tokens and 'refresh_token' in tokens:
+                    self.auth.refresh_access_token(tokens['refresh_token'])
+                    # Retry once with refreshed token
+                    headers = self._get_headers()
+                    headers.update(kwargs.pop('headers', {}))
+                    response = self.session.request(method, url, headers=headers, **kwargs)
+                else:
+                    raise Exception("Authentication expired. Please run 'egnyte-cli auth login'")
+            
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response
+            
+            # 429: Too Many Requests, back off and retry
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    time.sleep(float(retry_after))
+                except ValueError:
+                    time.sleep(backoff)
             else:
-                raise Exception("Authentication expired. Please run 'egnyte-cli auth login'")
+                time.sleep(backoff)
+            backoff = min(backoff * 2, 10)
         
         response.raise_for_status()
         return response
@@ -137,10 +161,14 @@ class EgnyteAPIClient:
             parent_path = '/'.join(remote_path.split('/')[:-1])
             if parent_path and parent_path != '/':
                 try:
-                    # Try to create the folder (might already exist)
-                    self.create_folder(parent_path)
+                    # Try to create the folder once (cache known parents)
+                    normalized_parent = parent_path.rstrip('/')
+                    if normalized_parent not in self.known_folders:
+                        self.create_folder(parent_path)
+                        self.known_folders.add(normalized_parent)
                 except:
-                    pass  # Folder might already exist
+                    # Folder might already exist; cache it to avoid repeat calls
+                    self.known_folders.add(parent_path.rstrip('/'))
         
         endpoint = f"/pubapi/v1/fs-content{remote_path}"
         
@@ -196,6 +224,7 @@ class EgnyteAPIClient:
         """Create a folder"""
         endpoint = f"/pubapi/v1/fs{path}"
         response = self._request('POST', endpoint, json={})
+        self.known_folders.add(path.rstrip('/'))
         return response.json()
     
     def delete_file(self, path: str) -> Dict:
@@ -233,3 +262,8 @@ class EgnyteAPIClient:
         response = self._request('GET', endpoint, params=params)
         return response.json().get('results', [])
 
+    def get_user_info(self) -> Dict:
+        """Get current user info"""
+        endpoint = "/pubapi/v1/userinfo"
+        response = self._request('GET', endpoint)
+        return response.json()

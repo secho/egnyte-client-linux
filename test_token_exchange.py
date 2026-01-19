@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 2026 Jan Sechovec from Revolgy and Remangu
 """Test script to debug token exchange"""
 
 import sys

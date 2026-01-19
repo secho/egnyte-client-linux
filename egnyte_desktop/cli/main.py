@@ -1,8 +1,11 @@
+# 2026 Jan Sechovec from Revolgy and Remangu
 """CLI main entry point"""
 
 import click
 import sys
 import logging
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import Config
@@ -12,6 +15,47 @@ from ..sync_engine import SyncEngine
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
+
+def _title(text: str):
+    """Print a bold section title."""
+    click.secho(text, bold=True)
+
+def _info(text: str):
+    """Print an informational message."""
+    click.secho(text, fg="cyan")
+
+def _success(text: str):
+    """Print a success message."""
+    click.secho(text, fg="green")
+
+def _warn(text: str):
+    """Print a warning message."""
+    click.secho(text, fg="yellow")
+
+def _error(text: str):
+    """Print an error message."""
+    click.secho(text, fg="red", bold=True, err=True)
+
+def _hint(text: str):
+    """Print a hint in a subdued style."""
+    click.secho(text, fg="bright_black")
+
+def _kv(label: str, value: str):
+    """Print a aligned key/value line."""
+    click.echo(f"{label:<16} {value}")
+
+def _bullet(text: str):
+    """Print a single bullet line."""
+    click.echo(f"- {text}")
+
+class MountGroup(click.Group):
+    """Mount group that treats unknown args as mount points."""
+    def resolve_command(self, ctx, args):
+        """Map unknown commands to 'start' to keep old UX."""
+        # Treat unknown subcommand as mount point for "start"
+        if args and args[0] not in self.commands:
+            args = ['start'] + args
+        return super().resolve_command(ctx, args)
 
 
 @click.group()
@@ -38,19 +82,22 @@ def config_set(ctx, key, value):
     
     if key == 'domain':
         config.set_domain(value)
-        click.echo(f"Domain set to: {value}")
+        _success("Domain updated.")
+        _kv("Domain:", value)
     elif key == 'client_id':
         config.set_client_id(value)
-        click.echo(f"Client ID set")
+        _success("Client ID updated.")
     elif key == 'client_secret':
         config.set_client_secret(value)
-        click.echo(f"Client secret set")
+        _success("Client secret updated.")
     elif key == 'redirect_uri':
         config.set_redirect_uri(value)
-        click.echo(f"Redirect URI set to: {value}")
+        _success("Redirect URI updated.")
+        _kv("Redirect URI:", value)
     else:
         config.set(key, value)
-        click.echo(f"{key} set to: {value}")
+        _success(f"{key} updated.")
+        _kv(f"{key}:", value)
 
 
 @config.command('get')
@@ -63,7 +110,7 @@ def config_get(ctx, key):
     if value:
         click.echo(value)
     else:
-        click.echo(f"Configuration key '{key}' not found", err=True)
+        _error(f"Configuration key '{key}' not found.")
         sys.exit(1)
 
 
@@ -76,17 +123,21 @@ def config_list(ctx):
     client_id = config.get_client_id()
     client_secret = config.get_client_secret()
     
-    click.echo("Configuration:")
-    click.echo(f"  Domain: {domain or 'Not set'}")
-    click.echo(f"  Client ID: {'*' * 20 if client_id else 'Not set'}")
-    click.echo(f"  Client Secret: {'*' * 20 if client_secret else 'Not set'}")
-    click.echo(f"  Redirect URI: {config.get_redirect_uri()}")
+    _title("Configuration")
+    _kv("Domain:", domain or "Not set")
+    _kv("Client ID:", ("*" * 20) if client_id else "Not set")
+    _kv("Client Secret:", ("*" * 20) if client_secret else "Not set")
+    _kv("Redirect URI:", config.get_redirect_uri())
+    _kv("Conflict policy:", config.get_sync_conflict_policy())
+    _kv("Delete local on remote missing:", str(config.get_delete_local_on_remote_missing()))
+    _kv("Delete remote on local missing:", str(config.get_delete_remote_on_local_missing()))
     
     sync_paths = config.get_sync_paths()
     if sync_paths:
-        click.echo("\nSync Paths:")
+        click.echo()
+        _title("Sync Paths")
         for local, remote in sync_paths.items():
-            click.echo(f"  {local} <-> {remote}")
+            _bullet(f"{local} <-> {remote}")
 
 
 @cli.group()
@@ -110,28 +161,28 @@ def auth_login(ctx, code):
     config = ctx.obj['config']
     
     if not config.get_domain() or not config.get_client_id():
-        click.echo("Error: Domain and Client ID must be configured first", err=True)
-        click.echo("Use: egnyte-cli config set domain YOUR_DOMAIN", err=True)
-        click.echo("Use: egnyte-cli config set client_id YOUR_CLIENT_ID", err=True)
+        _error("Domain and Client ID must be configured first.")
+        _hint("egnyte-cli config set domain YOUR_DOMAIN")
+        _hint("egnyte-cli config set client_id YOUR_CLIENT_ID")
         sys.exit(1)
     
     if not config.get_client_secret():
-        click.echo("Error: Client secret must be configured", err=True)
-        click.echo("Use: egnyte-cli config set client_secret YOUR_CLIENT_SECRET", err=True)
-        click.echo("\nYou can find your client secret in the Egnyte Developer Portal", err=True)
+        _error("Client secret must be configured.")
+        _hint("egnyte-cli config set client_secret YOUR_CLIENT_SECRET")
+        _hint("Client secret is available in the Egnyte Developer Portal.")
         sys.exit(1)
     
     auth = OAuthHandler(config)
     
     try:
-        click.echo("Starting authentication...")
+        _info("Starting authentication...")
         tokens = auth.authenticate(manual_code=code)
-        click.echo("Authentication successful!")
+        _success("Authentication successful.")
     except KeyboardInterrupt:
-        click.echo("\nAuthentication cancelled", err=True)
+        _warn("Authentication cancelled.")
         sys.exit(1)
     except Exception as e:
-        click.echo(f"Authentication failed: {e}", err=True)
+        _error(f"Authentication failed: {e}")
         sys.exit(1)
 
 
@@ -143,9 +194,40 @@ def auth_status(ctx):
     auth = OAuthHandler(config)
     
     if auth.is_authenticated():
-        click.echo("Authenticated")
+        _success("Authenticated.")
+        tokens = auth.load_tokens() or {}
+        api_client = EgnyteAPIClient(config, auth)
+        
+        user_display = "Unknown"
+        try:
+            user_info = api_client.get_user_info()
+            user_display = (
+                user_info.get("username")
+                or user_info.get("userName")
+                or user_info.get("email")
+                or user_info.get("name")
+                or "Unknown"
+            )
+        except Exception:
+            pass
+        
+        issued_at = tokens.get("issued_at")
+        expires_in = tokens.get("expires_in")
+        
+        auth_time = "Unknown"
+        expires_at = "Unknown"
+        if issued_at:
+            auth_time = datetime.fromtimestamp(int(issued_at), tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            if expires_in:
+                expires_at_ts = int(issued_at) + int(expires_in)
+                expires_at = datetime.fromtimestamp(expires_at_ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        
+        _kv("User:", user_display)
+        _kv("Authenticated:", auth_time)
+        _kv("Token expires:", expires_at)
     else:
-        click.echo("Not authenticated. Run 'egnyte-cli auth login'")
+        _warn("Not authenticated.")
+        _hint("egnyte-cli auth login")
         sys.exit(1)
 
 
@@ -157,7 +239,7 @@ def auth_revoke(ctx):
     auth = OAuthHandler(config)
     
     auth.revoke_tokens()
-    click.echo("Local authentication tokens removed.")
+    _success("Local authentication tokens removed.")
 
 
 @cli.group()
@@ -166,21 +248,67 @@ def sync():
     pass
 
 
+@cli.group()
+def service():
+    """Background sync service"""
+    pass
+
+
+@service.command('run')
+@click.option('--remote-interval', default=15, show_default=True, help='Remote polling interval (seconds)')
+def service_run(remote_interval):
+    """Run sync service in foreground"""
+    config = Config()
+    auth = OAuthHandler(config)
+    
+    if not auth.is_authenticated():
+        _error("Not authenticated.")
+        _hint("egnyte-cli auth login")
+        sys.exit(1)
+    
+    try:
+        from ..sync_service import EgnyteSyncService
+        _info("Starting Egnyte sync service...")
+        service = EgnyteSyncService(config, remote_interval=remote_interval)
+        service.start()
+    except KeyboardInterrupt:
+        _warn("Service stopped.")
+    except Exception as e:
+        _error(f"Service error: {e}")
+        sys.exit(1)
+
+
 @sync.command('add')
 @click.argument('local_path')
 @click.argument('remote_path')
+@click.option('--conflict-policy', type=click.Choice(['newest', 'local', 'remote']), help='Conflict policy for this path')
+@click.option('--delete-local-on-remote-missing', is_flag=True, help='Delete local when remote missing')
+@click.option('--delete-remote-on-local-missing', is_flag=True, help='Delete remote when local missing')
 @click.pass_context
-def sync_add(ctx, local_path, remote_path):
+def sync_add(ctx, local_path, remote_path, conflict_policy, delete_local_on_remote_missing, delete_remote_on_local_missing):
     """Add a sync path"""
     config = ctx.obj['config']
     
     local = Path(local_path)
     if not local.exists():
-        click.echo(f"Error: Local path does not exist: {local_path}", err=True)
+        _error(f"Local path does not exist: {local_path}")
         sys.exit(1)
     
-    config.add_sync_path(local_path, remote_path)
-    click.echo(f"Added sync path: {local_path} <-> {remote_path}")
+    policy = {}
+    if conflict_policy:
+        policy['conflict_policy'] = conflict_policy
+    if delete_local_on_remote_missing:
+        policy['delete_local_on_remote_missing'] = True
+    if delete_remote_on_local_missing:
+        policy['delete_remote_on_local_missing'] = True
+    
+    if policy:
+        config.set_sync_path_policy(local_path, policy)
+        config.set('sync_paths', {**config.get('sync_paths', {}), local_path: {'remote': remote_path, 'policy': policy}})
+    else:
+        config.add_sync_path(local_path, remote_path)
+    _success("Sync path added.")
+    _bullet(f"{local_path} <-> {remote_path}")
 
 
 @sync.command('remove')
@@ -190,7 +318,35 @@ def sync_remove(ctx, local_path):
     """Remove a sync path"""
     config = ctx.obj['config']
     config.remove_sync_path(local_path)
-    click.echo(f"Removed sync path: {local_path}")
+    _success("Sync path removed.")
+    _bullet(local_path)
+
+
+@sync.command('set-policy')
+@click.argument('local_path')
+@click.option('--conflict-policy', type=click.Choice(['newest', 'local', 'remote']), help='Conflict policy for this path')
+@click.option('--delete-local-on-remote-missing/--keep-local-on-remote-missing', default=None, help='Delete local when remote missing')
+@click.option('--delete-remote-on-local-missing/--keep-remote-on-local-missing', default=None, help='Delete remote when local missing')
+@click.pass_context
+def sync_set_policy(ctx, local_path, conflict_policy, delete_local_on_remote_missing, delete_remote_on_local_missing):
+    """Update policy for a sync path"""
+    config = ctx.obj['config']
+    entries = config.get_sync_entries()
+    if local_path not in entries:
+        _error(f"Sync path not found: {local_path}")
+        sys.exit(1)
+    
+    policy = entries[local_path].get('policy', {}) or {}
+    if conflict_policy:
+        policy['conflict_policy'] = conflict_policy
+    if delete_local_on_remote_missing is not None:
+        policy['delete_local_on_remote_missing'] = bool(delete_local_on_remote_missing)
+    if delete_remote_on_local_missing is not None:
+        policy['delete_remote_on_local_missing'] = bool(delete_remote_on_local_missing)
+    
+    config.set_sync_path_policy(local_path, policy)
+    _success("Sync policy updated.")
+    _bullet(f"{local_path} -> {entries[local_path].get('remote', '')}")
 
 
 @sync.command('list')
@@ -198,15 +354,25 @@ def sync_remove(ctx, local_path):
 def sync_list(ctx):
     """List all sync paths"""
     config = ctx.obj['config']
-    sync_paths = config.get_sync_paths()
+    sync_entries = config.get_sync_entries()
     
-    if not sync_paths:
-        click.echo("No sync paths configured")
+    if not sync_entries:
+        _warn("No sync paths configured.")
         return
     
-    click.echo("Sync Paths:")
-    for local, remote in sync_paths.items():
-        click.echo(f"  {local} <-> {remote}")
+    _title("Sync Paths")
+    for local, entry in sync_entries.items():
+        remote = entry.get('remote', '')
+        policy = entry.get('policy', {}) or {}
+        details = []
+        if policy.get('conflict_policy'):
+            details.append(f"conflict={policy.get('conflict_policy')}")
+        if policy.get('delete_local_on_remote_missing'):
+            details.append("delete_local_on_remote_missing")
+        if policy.get('delete_remote_on_local_missing'):
+            details.append("delete_remote_on_local_missing")
+        suffix = f" ({', '.join(details)})" if details else ""
+        _bullet(f"{local} <-> {remote}{suffix}")
 
 
 @sync.command('now')
@@ -218,7 +384,8 @@ def sync_now(ctx, path):
     auth = OAuthHandler(config)
     
     if not auth.is_authenticated():
-        click.echo("Error: Not authenticated. Run 'egnyte-cli auth login'", err=True)
+        _error("Not authenticated.")
+        _hint("egnyte-cli auth login")
         sys.exit(1)
     
     api_client = EgnyteAPIClient(config, auth)
@@ -229,27 +396,27 @@ def sync_now(ctx, path):
             # Sync specific path
             sync_paths = config.get_sync_paths()
             if path not in sync_paths:
-                click.echo(f"Error: Path not in sync list: {path}", err=True)
+                _error(f"Path not in sync list: {path}")
                 sys.exit(1)
             
             remote_path = sync_paths[path]
-            click.echo(f"Syncing {path}...")
+            _info(f"Syncing {path}...")
             results = sync_engine.sync_folder(Path(path), remote_path)
         else:
             # Sync all
-            click.echo("Syncing all paths...")
+            _info("Syncing all paths...")
             results = sync_engine.sync_all()
         
         success = sum(1 for r in results if r['success'])
-        click.echo(f"Sync complete: {success}/{len(results)} files synced")
+        _success(f"Sync complete: {success}/{len(results)} files synced.")
         
         if success < len(results):
             for r in results:
                 if not r['success']:
-                    click.echo(f"  Failed: {r['local_path']} - {r.get('error', 'Unknown error')}", err=True)
+                    _error(f"Failed: {r['local_path']} - {r.get('error', 'Unknown error')}")
     
     except Exception as e:
-        click.echo(f"Sync error: {e}", err=True)
+        _error(f"Sync error: {e}")
         sys.exit(1)
 
 
@@ -263,7 +430,8 @@ def download(ctx, remote_path, output):
     auth = OAuthHandler(config)
     
     if not auth.is_authenticated():
-        click.echo("Error: Not authenticated. Run 'egnyte-cli auth login'", err=True)
+        _error("Not authenticated.")
+        _hint("egnyte-cli auth login")
         sys.exit(1)
     
     api_client = EgnyteAPIClient(config, auth)
@@ -275,12 +443,12 @@ def download(ctx, remote_path, output):
             # Use filename from remote path
             local_path = Path(remote_path.split('/')[-1])
         
-        click.echo(f"Downloading {remote_path}...")
+        _info(f"Downloading {remote_path}...")
         api_client.download_file(remote_path, local_path)
-        click.echo(f"Downloaded to: {local_path}")
+        _success(f"Downloaded to: {local_path}")
     
     except Exception as e:
-        click.echo(f"Download error: {e}", err=True)
+        _error(f"Download error: {e}")
         sys.exit(1)
 
 
@@ -304,18 +472,19 @@ def upload(ctx, local_path, remote_path, overwrite, create_folders):
     auth = OAuthHandler(config)
     
     if not auth.is_authenticated():
-        click.echo("Error: Not authenticated. Run 'egnyte-cli auth login'", err=True)
+        _error("Not authenticated.")
+        _hint("egnyte-cli auth login")
         sys.exit(1)
     
     api_client = EgnyteAPIClient(config, auth)
     local_file = Path(local_path)
     
     if not local_file.exists():
-        click.echo(f"Error: File does not exist: {local_path}", err=True)
+        _error(f"File does not exist: {local_path}")
         sys.exit(1)
     
     if local_file.is_dir():
-        click.echo(f"Error: {local_path} is a directory. Use sync command for directories.", err=True)
+        _error(f"{local_path} is a directory. Use sync command for directories.")
         sys.exit(1)
     
     try:
@@ -327,16 +496,17 @@ def upload(ctx, local_path, remote_path, overwrite, create_folders):
         
         # Check if trying to upload directly to /Shared/
         if final_remote_path == f'/Shared/{local_file.name}':
-            click.echo("Warning: Cannot upload directly to /Shared/. Using /Shared/Documents/ instead.")
+            _warn("Cannot upload directly to /Shared/. Using /Shared/Documents/ instead.")
             final_remote_path = f'/Shared/Documents/{local_file.name}'
         
-        click.echo(f"Uploading {local_path} to {final_remote_path}...")
+        _info(f"Uploading {local_path} to {final_remote_path}...")
+        _hint("Tip: pass --no-create-folders for faster uploads when folder exists.")
         
         result = api_client.upload_file(local_file, remote_path, overwrite=overwrite, create_folders=create_folders)
-        click.echo(f"✓ Uploaded successfully to: {final_remote_path}")
+        _success(f"Uploaded to: {final_remote_path}")
     
     except Exception as e:
-        click.echo(f"Upload error: {e}", err=True)
+        _error(f"Upload error: {e}")
         sys.exit(1)
 
 
@@ -349,7 +519,8 @@ def ls(ctx, remote_path):
     auth = OAuthHandler(config)
     
     if not auth.is_authenticated():
-        click.echo("Error: Not authenticated. Run 'egnyte-cli auth login'", err=True)
+        _error("Not authenticated.")
+        _hint("egnyte-cli auth login")
         sys.exit(1)
     
     api_client = EgnyteAPIClient(config, auth)
@@ -358,26 +529,27 @@ def ls(ctx, remote_path):
         items = api_client.list_folder(remote_path)
         
         if not items:
-            click.echo("Empty folder")
+            _warn("Empty folder.")
             return
         
         # Sort: folders first, then files
         folders = [i for i in items if i.get('is_folder')]
         files = [i for i in items if not i.get('is_folder')]
         
+        _title(f"Listing {remote_path}")
         for item in sorted(folders, key=lambda x: x.get('name', '')):
             name = item.get('name', '')
             size = item.get('size', 0)
-            click.echo(f"  {name}/  [{size} bytes]")
+            _bullet(f"{name}/  [{size} bytes]")
         
         for item in sorted(files, key=lambda x: x.get('name', '')):
             name = item.get('name', '')
             size = item.get('size', 0)
             modified = item.get('modified_time', '')[:19] if item.get('modified_time') else ''
-            click.echo(f"  {name}  [{size} bytes]  {modified}")
+            _bullet(f"{name}  [{size} bytes]  {modified}")
     
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
+        _error(f"Error: {e}")
         sys.exit(1)
 
 
@@ -388,31 +560,49 @@ def status(ctx):
     config = ctx.obj['config']
     auth = OAuthHandler(config)
     
-    click.echo("Egnyte Desktop Client Status")
-    click.echo("=" * 40)
+    _title("Egnyte CLI Status")
     
     # Authentication
     if auth.is_authenticated():
-        click.echo("Authentication: ✓ Authenticated")
+        _kv("Authentication:", "Authenticated")
     else:
-        click.echo("Authentication: ✗ Not authenticated")
+        _kv("Authentication:", "Not authenticated")
     
     # Configuration
     domain = config.get_domain()
-    click.echo(f"Domain: {domain or 'Not set'}")
+    _kv("Domain:", domain or "Not set")
     
     # Sync paths
     sync_paths = config.get_sync_paths()
-    click.echo(f"Sync Paths: {len(sync_paths)} configured")
+    _kv("Sync paths:", f"{len(sync_paths)} configured")
     for local, remote in sync_paths.items():
-        click.echo(f"  {local} <-> {remote}")
+        _bullet(f"{local} <-> {remote}")
 
 
-@cli.command()
-@click.argument('mount_point')
-@click.option('--foreground/--background', default=False, help='Run in foreground (for debugging)')
-@click.pass_context
-def mount(ctx, mount_point, foreground):
+def _list_egnyte_mounts():
+    """Read /proc/mounts and return Egnyte mount points."""
+    mounts = []
+    try:
+        with open("/proc/mounts", "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                source, mount_point, fstype, options = parts[0], parts[1], parts[2], parts[3]
+                if (
+                    fstype == "fuse.egnyte"
+                    or "subtype=egnyte" in options
+                    or "fsname=egnyte" in options
+                    or (fstype.startswith("fuse") and source in {"egnyte", "EgnyteFuse"})
+                ):
+                    mounts.append(mount_point)
+    except Exception:
+        pass
+    return mounts
+
+
+@cli.group(cls=MountGroup)
+def mount():
     """Mount Egnyte as a FUSE filesystem
     
     Requires: sudo apt-get install fuse libfuse-dev
@@ -420,21 +610,26 @@ def mount(ctx, mount_point, foreground):
     Example:
         egnyte-cli mount ~/egnyte
     """
+    pass
+
+
+def _mount_start(ctx, mount_point, foreground):
+    """Perform the actual mount operation."""
     try:
         from ..fuse_mount import mount_egnyte
     except ImportError as e:
-        click.echo(f"Error: Cannot import fuse_mount module: {e}", err=True)
+        _error(f"Cannot import fuse_mount module: {e}")
         # Try to import fuse directly to give better error message
         try:
             import fuse
-            click.echo("fuse module is available", err=True)
-        except ImportError as fuse_error:
-            click.echo("fuse-python not installed", err=True)
-            click.echo("Install with: pip install fuse-python", err=True)
-            click.echo("Also install system package: sudo apt-get install fuse libfuse-dev", err=True)
+            _info("fuse module is available.")
+        except ImportError:
+            _error("fuse-python not installed.")
+            _hint("pip install fuse-python")
+            _hint("sudo apt-get install fuse libfuse-dev")
         sys.exit(1)
     except Exception as e:
-        click.echo(f"Error loading mount module: {e}", err=True)
+        _error(f"Error loading mount module: {e}")
         import traceback
         click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
@@ -443,24 +638,93 @@ def mount(ctx, mount_point, foreground):
     auth = OAuthHandler(config)
     
     if not auth.is_authenticated():
-        click.echo("Error: Not authenticated. Run 'egnyte-cli auth login'", err=True)
+        _error("Not authenticated.")
+        _hint("egnyte-cli auth login")
         sys.exit(1)
     
     api_client = EgnyteAPIClient(config, auth)
     
     try:
-        click.echo(f"Mounting Egnyte to {mount_point}...")
-        click.echo("Press Ctrl+C to unmount")
+        _info(f"Mounting Egnyte to {mount_point}...")
+        _hint("Press Ctrl+C to unmount")
         
         mount_egnyte(mount_point, config, api_client, foreground=foreground)
     except KeyboardInterrupt:
-        click.echo("\nUnmounting...")
-        import subprocess
+        _info("Unmounting...")
         subprocess.run(['fusermount', '-u', mount_point], check=False)
-        click.echo("Unmounted")
+        _success("Unmounted.")
     except Exception as e:
-        click.echo(f"Mount error: {e}", err=True)
+        _error(f"Mount error: {e}")
         sys.exit(1)
+
+
+@mount.command('list')
+def mount_list():
+    """List Egnyte mounts"""
+    mounts = _list_egnyte_mounts()
+    if not mounts:
+        _warn("No Egnyte mounts found.")
+        return
+    _title("Egnyte Mounts")
+    for m in mounts:
+        _bullet(m)
+
+
+@mount.command('umount')
+@click.argument('mount_point', required=False)
+@click.option('--all', 'unmount_all', is_flag=True, help='Unmount all Egnyte mounts')
+def mount_umount(mount_point, unmount_all):
+    """Unmount an Egnyte mount"""
+    if unmount_all:
+        mounts = _list_egnyte_mounts()
+        if not mounts:
+            _warn("No Egnyte mounts found.")
+            return
+        for m in mounts:
+            subprocess.run(['fusermount', '-u', m], check=False)
+            _success(f"Unmounted {m}")
+        return
+    
+    if not mount_point:
+        _error("Mount point is required.")
+        _hint("egnyte-cli mount umount /path/to/mount")
+        sys.exit(1)
+    
+    subprocess.run(['fusermount', '-u', mount_point], check=False)
+    _success(f"Unmounted {mount_point}")
+
+
+@mount.command('unmount')
+@click.argument('mount_point', required=False)
+@click.option('--all', 'unmount_all', is_flag=True, help='Unmount all Egnyte mounts')
+def mount_unmount(mount_point, unmount_all):
+    """Unmount an Egnyte mount (alias of umount)"""
+    if unmount_all:
+        mounts = _list_egnyte_mounts()
+        if not mounts:
+            _warn("No Egnyte mounts found.")
+            return
+        for m in mounts:
+            subprocess.run(['fusermount', '-u', m], check=False)
+            _success(f"Unmounted {m}")
+        return
+    
+    if not mount_point:
+        _error("Mount point is required.")
+        _hint("egnyte-cli mount unmount /path/to/mount")
+        sys.exit(1)
+    
+    subprocess.run(['fusermount', '-u', mount_point], check=False)
+    _success(f"Unmounted {mount_point}")
+
+
+@mount.command('start')
+@click.argument('mount_point')
+@click.option('--foreground/--background', default=False, help='Run in foreground (for debugging)')
+@click.pass_context
+def mount_start(ctx, mount_point, foreground):
+    """Mount Egnyte (explicit subcommand)"""
+    _mount_start(ctx, mount_point, foreground)
 
 
 def main():
