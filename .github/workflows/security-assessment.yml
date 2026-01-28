@@ -1,0 +1,63 @@
+name: Security assessment
+
+on:
+  push:
+    paths-ignore:
+      - "SECURITY_ASSESSMENT.md"
+  pull_request:
+    paths-ignore:
+      - "SECURITY_ASSESSMENT.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  security-assessment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "table"
+          output: "trivy-report.txt"
+          vuln-type: "os,library"
+          security-checks: "vuln,secret,config"
+          severity: "UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL"
+          exit-code: "0"
+
+      - name: Build SECURITY_ASSESSMENT.md
+        run: |
+          {
+            echo "# Security Assessment"
+            echo ""
+            echo "Generated on $(date -u +"%Y-%m-%dT%H:%M:%SZ") UTC"
+            echo ""
+            echo "## Trivy filesystem scan"
+            echo ""
+            echo "Scanners: vuln,secret,config"
+            echo "Vulnerability types: os,library"
+            echo "Severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL"
+            echo ""
+            echo "```"
+            cat trivy-report.txt
+            echo "```"
+          } > SECURITY_ASSESSMENT.md
+
+      - name: Commit report
+        if: github.event_name == 'push'
+        run: |
+          if [ -z "$(git status --porcelain SECURITY_ASSESSMENT.md)" ]; then
+            echo "No report changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add SECURITY_ASSESSMENT.md
+          git commit -m "chore: update security assessment [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
