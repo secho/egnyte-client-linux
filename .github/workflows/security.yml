@@ -1,0 +1,65 @@
+name: Security Assessment
+
+on:
+  push:
+    branches: [ "master", "main" ]
+    paths-ignore:
+      - 'SECURITY_ASSESSMENT.md'
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Security Tools
+        run: |
+          pip install bandit
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate Security Assessment Report
+        run: |
+          REPORT_FILE="SECURITY_ASSESSMENT.md"
+          
+          echo "# Security Assessment Report" > $REPORT_FILE
+          echo "Generated on: $(date)" >> $REPORT_FILE
+          echo "" >> $REPORT_FILE
+          
+          echo "## Trivy Vulnerability Scan" >> $REPORT_FILE
+          echo "\`\`\`" >> $REPORT_FILE
+          # Run Trivy scanning filesystem, ignore exit code
+          trivy fs . --format table --scanners vuln,secret,config --severity CRITICAL,HIGH >> $REPORT_FILE 2>&1 || true
+          echo "\`\`\`" >> $REPORT_FILE
+          echo "" >> $REPORT_FILE
+          
+          echo "## Bandit Python Code Scan" >> $REPORT_FILE
+          echo "\`\`\`" >> $REPORT_FILE
+          # Run Bandit, ignore exit code
+          bandit -r . -f txt >> $REPORT_FILE 2>&1 || true
+          echo "\`\`\`" >> $REPORT_FILE
+
+      - name: Commit and Push Report
+        if: github.event_name != 'pull_request'
+        run: |
+          git config --global user.name "Security Bot"
+          git config --global user.email "security-bot@example.com"
+          git add SECURITY_ASSESSMENT.md
+          if git diff --staged --quiet; then
+            echo "No changes to security assessment."
+          else
+            git commit -m "Update Security Assessment Report [skip ci]"
+            git push
+          fi
