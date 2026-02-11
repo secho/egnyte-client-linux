@@ -1,0 +1,12 @@
+/workspace/target/debug/deps/zerocopy-6fc9ae3ab46db0e2.d: /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/lib.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/macros.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/byteorder.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/macro_util.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/post_monomorphization_compile_fail_tests.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/util.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/third_party/rust/layout.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/wrappers.rs
+
+/workspace/target/debug/deps/libzerocopy-6fc9ae3ab46db0e2.rmeta: /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/lib.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/macros.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/byteorder.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/macro_util.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/post_monomorphization_compile_fail_tests.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/util.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/third_party/rust/layout.rs /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/wrappers.rs
+
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/lib.rs:
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/macros.rs:
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/byteorder.rs:
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/macro_util.rs:
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/post_monomorphization_compile_fail_tests.rs:
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/util.rs:
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/third_party/rust/layout.rs:
+/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.7.35/src/wrappers.rs:
