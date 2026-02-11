@@ -67,3 +67,7 @@ htmlcov/
 
 # Deprecated/archived code
 deprecated/
+
+# Secrets
+*.pem
+*.key

@@ -7,6 +7,7 @@ import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from builtins import open as open
 
 from ..config import Config
 from ..auth import OAuthHandler
@@ -148,8 +149,10 @@ def auth():
 
 @auth.command('login')
 @click.option('--code', help='Authorization code (if manually entering)')
+@click.option('--password-flow', is_flag=True, help='Use Resource Owner Password flow (internal apps)')
+@click.option('--username', '-u', help='Egnyte username (for password flow)')
 @click.pass_context
-def auth_login(ctx, code):
+def auth_login(ctx, code, password_flow, username):
     """Authenticate with Egnyte
     
     If Egnyte requires HTTPS redirect URI, you'll need to manually enter the code:
@@ -157,8 +160,15 @@ def auth_login(ctx, code):
     2. Complete authorization in browser
     3. Copy the 'code' parameter from the error page URL
     4. Run: egnyte-cli auth login --code YOUR_CODE
+
+    Password flow (internal apps only):
+    - Use: egnyte-cli auth login --password-flow --username USERNAME
     """
     config = ctx.obj['config']
+
+    if password_flow and code:
+        _error("Cannot combine --code with --password-flow.")
+        sys.exit(1)
     
     if not config.get_domain() or not config.get_client_id():
         _error("Domain and Client ID must be configured first.")
@@ -175,8 +185,15 @@ def auth_login(ctx, code):
     auth = OAuthHandler(config)
     
     try:
-        _info("Starting authentication...")
-        tokens = auth.authenticate(manual_code=code)
+        if password_flow:
+            _info("Starting password authentication...")
+            if not username:
+                username = click.prompt("Username")
+            password = click.prompt("Password", hide_input=True)
+            tokens = auth.authenticate_password(username=username, password=password)
+        else:
+            _info("Starting authentication...")
+            tokens = auth.authenticate(manual_code=code)
         _success("Authentication successful.")
     except KeyboardInterrupt:
         _warn("Authentication cancelled.")
@@ -225,6 +242,8 @@ def auth_status(ctx):
         _kv("User:", user_display)
         _kv("Authenticated:", auth_time)
         _kv("Token expires:", expires_at)
+        if tokens.get("access_token") and not tokens.get("refresh_token"):
+            _hint("No refresh token stored; re-authenticate when token expires.")
     else:
         _warn("Not authenticated.")
         _hint("egnyte-cli auth login")

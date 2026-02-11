@@ -1,0 +1,23 @@
+# Example systemd user unit for Egnyte sync service
+# Copy to ~/.config/systemd/user/egnyte-sync.service and customize paths
+#
+# Install: systemctl --user enable egnyte-sync.service
+# Start:   systemctl --user start egnyte-sync.service
+# Status:  systemctl --user status egnyte-sync.service
+# Logs:    journalctl --user -u egnyte-sync.service -f
+
+[Unit]
+Description=Egnyte Sync Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust the path below if egnyte-cli is installed elsewhere
+ExecStart=%h/.local/bin/egnyte-cli service run --remote-interval 15
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

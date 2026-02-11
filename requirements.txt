@@ -1,3 +1,10 @@
+# Runtime dependencies for egnyte-cli
+# Note: These are also defined in pyproject.toml
+# Use `pip install .` or `pip install egnyte-cli` for installation
+#
+# System dependencies required:
+#   sudo apt-get install fuse libfuse-dev
+#
 requests>=2.31.0
 watchdog>=3.0.0
 click>=8.1.0
@@ -7,8 +14,4 @@ python-dateutil>=2.8.2
 aiohttp>=3.9.0
 asyncio-throttle>=1.0.2
 fusepy>=3.0.0
-# Alternative: fuse-python>=1.0.0 (has compatibility issues, fusepy recommended)
-# Note: PyGObject should be installed via system packages (python3-gi)
-# Note: FUSE requires system package: sudo apt-get install fuse libfuse-dev
-# Install system dependencies first, then run: pip install -r requirements.txt
 

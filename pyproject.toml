@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "egnyte-cli"
+dynamic = ["version"]
+description = "Egnyte CLI client for Linux with sync and FUSE mount"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Jan Sechovec" }
+]
+keywords = ["egnyte", "cli", "sync", "fuse", "oauth"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: End Users/Desktop",
+  "Topic :: System :: Filesystems",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12"
+]
+dependencies = [
+  "requests>=2.31.0",
+  "watchdog>=3.0.0",
+  "click>=8.1.0",
+  "cryptography>=41.0.0",
+  "keyring>=24.2.0",
+  "python-dateutil>=2.8.2",
+  "aiohttp>=3.9.0",
+  "asyncio-throttle>=1.0.2",
+  "fusepy>=3.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0.0",
+  "ruff>=0.3.0",
+  "build>=1.0.0"
+]
+
+[project.scripts]
+egnyte-cli = "egnyte_desktop.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/secho/egnyte-cli"
+Documentation = "https://github.com/secho/egnyte-cli#readme"
+Issues = "https://github.com/secho/egnyte-cli/issues"
+Changelog = "https://github.com/secho/egnyte-cli/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["egnyte_desktop*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "egnyte_desktop.__version__" }
