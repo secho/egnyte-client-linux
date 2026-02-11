@@ -1,11 +1,10 @@
-.PHONY: install install-dev clean test run-gui run-cli
+.PHONY: install install-dev clean test lint format build
 
 install:
-	pip3 install -r requirements.txt
 	pip3 install -e .
 
-install-dev: install
-	pip3 install pytest pytest-cov black flake8 mypy
+install-dev:
+	pip3 install -e ".[dev]"
 
 clean:
 	rm -rf build/ dist/ *.egg-info
@@ -13,18 +12,14 @@ clean:
 	find . -type f -name "*.pyc" -delete
 
 test:
-	pytest tests/
-
-run-gui:
-	python3 -m egnyte_desktop.gui.main
-
-run-cli:
-	python3 -m egnyte_desktop.cli.main
-
-format:
-	black egnyte_desktop/
+	pytest tests/ -v
 
 lint:
-	flake8 egnyte_desktop/
-	mypy egnyte_desktop/
+	ruff check egnyte_desktop/ tests/
+
+format:
+	ruff format egnyte_desktop/ tests/
+
+build:
+	python3 -m build
 

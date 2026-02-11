@@ -1,89 +1,130 @@
-# Egnyte Desktop Client for Linux
+# Egnyte CLI for Linux
 
-A native Linux desktop application for Egnyte with both GUI and CLI interfaces, built with GTK3 and optimized for speed.
+[![PyPI](https://img.shields.io/pypi/v/egnyte-cli)](https://pypi.org/project/egnyte-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/egnyte-cli)](https://pypi.org/project/egnyte-cli/)
+[![License](https://img.shields.io/github/license/secho/egnyte-cli)](LICENSE)
+[![CI](https://github.com/secho/egnyte-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/secho/egnyte-cli/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/pypi/dm/egnyte-cli)](https://pypi.org/project/egnyte-cli/)
+
+Professional command-line client for Egnyte on Linux with OAuth authentication, sync, and optional FUSE mounting.
 
 ## Features
 
-- **Bidirectional File Sync**: Automatic synchronization between local and Egnyte cloud storage
-- **GTK3 GUI**: Native GNOME/Ubuntu interface with file browser
-- **CLI Interface**: Full command-line access to all operations
-- **OAuth2 Authentication**: Secure authentication flow
-- **File Watching**: Real-time monitoring of local file changes
-- **Efficient Sync**: Optimized algorithms for fast synchronization
-- **Status Indicators**: Visual feedback for sync status
-
-## Requirements
-
-- Python 3.8+
-- GTK3 development libraries
-- Ubuntu 20.04+ / GNOME 3.36+
-
-## Installation
-
-```bash
-# Install system dependencies
-sudo apt-get update
-sudo apt-get install -y \
-    python3-pip \
-    python3-gi \
-    python3-gi-cairo \
-    gir1.2-gtk-3.0 \
-    gir1.2-glib-2.0 \
-    gir1.2-gdkpixbuf-2.0 \
-    gir1.2-pango-1.0 \
-    libgirepository1.0-dev \
-    gobject-introspection \
-    pkg-config \
-    libcairo2-dev
-
-# Install Python dependencies
-pip3 install -r requirements.txt
-
-# Install the application
-python3 setup.py install
-```
-
-**Note**: If using a virtual environment, it must be created with `--system-site-packages` to access PyGObject. See [VENV_SETUP.md](VENV_SETUP.md) for details.
+- OAuth2 authentication (Authorization Code and Resource Owner Password for internal apps)
+- Bidirectional sync engine with conflict policies
+- CLI for upload, download, list, and status
+- Optional FUSE filesystem mount
+- Rate-limited API client with retry/backoff
 
 ## Quick Start
 
-### GUI Mode
 ```bash
-egnyte-desktop
-```
+# 1) Install (recommended)
+pipx install egnyte-cli
 
-### CLI Mode
-```bash
-# Authenticate
+# 2) Configure
+egnyte-cli config set domain YOUR_DOMAIN
+egnyte-cli config set client_id YOUR_CLIENT_ID
+egnyte-cli config set client_secret YOUR_CLIENT_SECRET
+
+# 3) Authenticate
 egnyte-cli auth login
 
-# Sync a folder
-egnyte-cli sync /path/to/local/folder /Shared/Folder
-
-# Upload a file
-egnyte-cli upload /path/to/file.txt /Shared/Documents/
-
-# Download a file
-egnyte-cli download /Shared/Documents/file.txt /path/to/local/
-
-# List files
+# Example commands
 egnyte-cli ls /Shared/
+egnyte-cli upload ./file.txt /Shared/Documents/
+```
+
+## Installation
+
+### System requirements
+
+- Python 3.8+
+- Linux (Ubuntu/Debian tested)
+
+### Recommended install (no virtualenv)
+
+```bash
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+pipx install egnyte-cli
+```
+
+### Alternative (pip)
+
+```bash
+python3 -m pip install --user egnyte-cli
+```
+
+### Optional system dependencies
+
+FUSE mount support (optional):
+```bash
+sudo apt-get update
+sudo apt-get install -y fuse libfuse-dev
+```
+
+Keyring backend (recommended for storing tokens and secrets securely):
+```bash
+sudo apt-get install -y gnome-keyring libsecret-1-0
+```
+
+## Authentication
+
+### Authorization Code (default)
+
+```bash
+egnyte-cli auth login
+```
+
+If your redirect URI is HTTPS localhost, you may see a certificate warning on callback. For alternatives, see [docs/oauth-setup.md](docs/oauth-setup.md).
+
+### Resource Owner Password (internal apps only)
+
+```bash
+egnyte-cli auth login --password-flow --username USERNAME
+```
+
+This flow is supported only for internal application keys, as per Egnyte documentation.
+
+## Usage
+
+```bash
+# Sync paths
+egnyte-cli sync add /local/path /Shared/Folder
+egnyte-cli sync list
+egnyte-cli sync now
+
+# File operations
+egnyte-cli ls /Shared/
+egnyte-cli upload ./file.txt /Shared/Documents/
+egnyte-cli download /Shared/Documents/file.txt ./file.txt
 
 # Status
+egnyte-cli auth status
 egnyte-cli status
 ```
 
 ## Configuration
 
-The application stores configuration in `~/.config/egnyte-desktop/`
+Configuration and tokens are stored under:
+```
+~/.config/egnyte-desktop/
+```
 
-## Development
+## Documentation
 
-See [DEVELOPER_SETUP.md](DEVELOPER_SETUP.md) for detailed setup instructions.
+- OAuth setup: [docs/oauth-setup.md](docs/oauth-setup.md)
+- Development setup: [docs/development.md](docs/development.md)
+
+## Security
+
+Security-related information and reporting instructions are in [SECURITY.md](SECURITY.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT
-
-# egnyte-client-linux
-# egnyte-client-linux
+MIT. See [LICENSE](LICENSE).

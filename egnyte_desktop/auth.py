@@ -3,6 +3,7 @@
 
 import json
 import time
+import os
 import webbrowser
 import http.server
 import socketserver
@@ -248,6 +249,72 @@ class OAuthHandler:
         # Use the same redirect_uri that was used in the authorization request
         redirect_uri = self.config.get_redirect_uri()
         return self.exchange_code_for_tokens(auth_code, redirect_uri_override=redirect_uri)
+
+    def authenticate_password(self, username: str, password: str) -> Dict[str, str]:
+        """Authenticate using Resource Owner Password Credentials flow.
+
+        For internal Egnyte applications only.
+        """
+        domain = self.config.get_domain()
+        if not domain:
+            raise ValueError("Domain not configured")
+
+        client_id = self.config.get_client_id()
+        if not client_id:
+            raise ValueError("Client ID not configured")
+
+        client_secret = self.config.get_client_secret()
+        if not client_secret:
+            raise ValueError("Client secret not configured. Please set it with: egnyte-cli config set client_secret YOUR_SECRET")
+
+        if not username or not password:
+            raise ValueError("Username and password are required for password flow")
+
+        token_url = f"https://{domain}.egnyte.com/puboauth/token"
+
+        data = {
+            'grant_type': 'password',
+            'username': username,
+            'password': password,
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'scope': 'Egnyte.filesystem Egnyte.user',
+        }
+
+        response = requests.post(token_url, data=data)
+
+        if not response.ok:
+            error_msg = f"Password authentication failed: {response.status_code} {response.reason}"
+            try:
+                error_data = response.json()
+                if 'error' in error_data:
+                    error_msg += f"\nError: {error_data.get('error')}"
+                if 'error_description' in error_data:
+                    error_msg += f"\nDescription: {error_data.get('error_description')}"
+                if 'errorMessage' in error_data:
+                    error_msg += f"\nError Message: {error_data.get('errorMessage')}"
+                if 'formErrors' in error_data:
+                    for form_error in error_data.get('formErrors', []):
+                        error_msg += f"\n{form_error.get('code', '')}: {form_error.get('msg', '')}"
+                error_msg += f"\n\nFull response: {json.dumps(error_data, indent=2)}"
+            except Exception as e:
+                error_msg += f"\nResponse: {response.text[:500]}"
+                error_msg += f"\n(Could not parse JSON: {e})"
+
+            error_msg += "\n\nTroubleshooting:"
+            error_msg += "\n- Ensure your application key supports internal/password flow"
+            error_msg += "\n- Check username, password, and client_secret"
+            error_msg += "\n- Request details:"
+            error_msg += f"\n  - Token URL: {token_url}"
+            error_msg += f"\n  - Client ID: {client_id[:10]}..."
+
+            raise Exception(error_msg)
+
+        tokens = response.json()
+
+        self.save_tokens(tokens)
+
+        return tokens
     
     def exchange_code_for_tokens(self, auth_code: str, redirect_uri_override: Optional[str] = None) -> Dict[str, str]:
         """Exchange authorization code for access and refresh tokens
@@ -344,7 +411,14 @@ class OAuthHandler:
     def save_tokens(self, tokens: Dict[str, str]):
         """Save tokens securely using keyring"""
         # Store refresh token in keyring (more secure)
-        keyring.set_password("egnyte-desktop", "refresh_token", tokens.get('refresh_token', ''))
+        refresh_token = tokens.get('refresh_token')
+        if refresh_token:
+            keyring.set_password("egnyte-desktop", "refresh_token", refresh_token)
+        else:
+            try:
+                keyring.delete_password("egnyte-desktop", "refresh_token")
+            except Exception:
+                pass
         
         # Store access token and expiry in config (less sensitive, expires quickly)
         token_data = {
@@ -356,6 +430,10 @@ class OAuthHandler:
         
         with open(self.config.TOKEN_FILE, 'w') as f:
             json.dump(token_data, f)
+        try:
+            os.chmod(self.config.TOKEN_FILE, 0o600)
+        except Exception:
+            pass
 
     def revoke_tokens(self):
         """Remove stored tokens locally"""

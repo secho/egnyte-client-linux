@@ -3,8 +3,10 @@
 
 import os
 import json
+import re
 from pathlib import Path
 from typing import Dict, Optional
+import keyring
 
 
 class Config:
@@ -42,6 +44,10 @@ class Config:
         """Save configuration to file"""
         with open(self.CONFIG_FILE, 'w') as f:
             json.dump(self._config, f, indent=2)
+        try:
+            os.chmod(self.CONFIG_FILE, 0o600)
+        except Exception:
+            pass
     
     def get(self, key: str, default=None):
         """Get configuration value"""
@@ -58,6 +64,8 @@ class Config:
     
     def set_domain(self, domain: str):
         """Set Egnyte domain"""
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]$', domain):
+            raise ValueError("Invalid domain format")
         self.set('domain', domain)
     
     def get_client_id(self) -> Optional[str]:
@@ -70,11 +78,31 @@ class Config:
     
     def get_client_secret(self) -> Optional[str]:
         """Get OAuth client secret"""
-        return self.get('client_secret')
+        try:
+            secret = keyring.get_password("egnyte-desktop", "client_secret")
+            if secret:
+                return secret
+        except Exception:
+            secret = None
+
+        legacy_secret = self.get('client_secret')
+        if legacy_secret:
+            try:
+                keyring.set_password("egnyte-desktop", "client_secret", legacy_secret)
+                self._config.pop('client_secret', None)
+                self._save_config()
+            except Exception:
+                return legacy_secret
+            return legacy_secret
+
+        return None
     
     def set_client_secret(self, client_secret: str):
-        """Set OAuth client secret"""
-        self.set('client_secret', client_secret)
+        """Set OAuth client secret (stored securely in keyring)"""
+        keyring.set_password("egnyte-desktop", "client_secret", client_secret)
+        if 'client_secret' in self._config:
+            self._config.pop('client_secret', None)
+            self._save_config()
     
     def get_redirect_uri(self) -> str:
         """Get OAuth redirect URI

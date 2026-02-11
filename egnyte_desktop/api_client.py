@@ -42,9 +42,21 @@ class EgnyteAPIClient:
         """Create a client bound to config and auth."""
         self.config = config
         self.auth = auth
-        self.rate_limiter = RateLimiter(config.RATE_LIMIT_QPS)
-        self.domain = config.get_domain()
-        self.base_url = f"https://{self.domain}.egnyte.com"
+        # Be tolerant of test doubles / lightweight config objects.
+        qps = getattr(config, "RATE_LIMIT_QPS", Config.RATE_LIMIT_QPS)
+        self.rate_limiter = RateLimiter(float(qps))
+
+        domain = None
+        get_domain = getattr(config, "get_domain", None)
+        if callable(get_domain):
+            domain = get_domain()
+        if not domain:
+            get_value = getattr(config, "get", None)
+            if callable(get_value):
+                domain = get_value("domain")
+
+        self.domain = domain
+        self.base_url = f"https://{self.domain}.egnyte.com" if self.domain else ""
         self.session = requests.Session()
         self.known_folders = set()
     
@@ -61,6 +73,8 @@ class EgnyteAPIClient:
     
     def _request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """Make API request with rate limiting and error handling"""
+        if not self.base_url:
+            raise Exception("Egnyte domain not configured. Please run: egnyte-cli config set domain YOUR_DOMAIN")
         url = f"{self.base_url}{endpoint}"
         retries = 5
         backoff = 0.5
