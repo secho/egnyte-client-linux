@@ -15,12 +15,30 @@ struct Config {
     extra: HashMap<String, serde_json::Value>,
 }
 
-/// Tokens loaded from ~/.config/egnyte-desktop/tokens.json
-#[derive(Debug, Deserialize, Serialize)]
-struct Tokens {
+/// Python tokens.json format: access_token, expires_in, issued_at (refresh_token in keyring)
+#[derive(Debug, Deserialize)]
+struct TokenFile {
     access_token: Option<String>,
-    refresh_token: Option<String>,
-    expires_at: Option<u64>,
+    expires_in: Option<u64>,
+    issued_at: Option<i64>,
+}
+
+/// Get refresh_token from system keyring (egnyte-desktop / refresh_token)
+fn get_refresh_token_from_keyring() -> Result<Option<String>> {
+    let entry = keyring::Entry::new("egnyte-desktop", "refresh_token")?;
+    match entry.get_password() {
+        Ok(pwd) if !pwd.is_empty() => Ok(Some(pwd)),
+        _ => Ok(None),
+    }
+}
+
+/// Get client_secret from system keyring (egnyte-desktop / client_secret)
+fn get_client_secret_from_keyring() -> Result<Option<String>> {
+    let entry = keyring::Entry::new("egnyte-desktop", "client_secret")?;
+    match entry.get_password() {
+        Ok(pwd) if !pwd.is_empty() => Ok(Some(pwd)),
+        _ => Ok(None),
+    }
 }
 
 /// Egnyte API entry (file or folder)
@@ -115,16 +133,16 @@ impl EgnyteAPIClient {
 
         let base_url = format!("https://{}.egnyte.com", domain);
 
-        // Load tokens
+        // Load tokens from tokens.json (Python format: access_token, expires_in, issued_at)
         let token_file = config_dir.join("tokens.json");
-        let tokens: Tokens = if token_file.exists() {
+        let token_data: TokenFile = if token_file.exists() {
             let content = tokio::fs::read_to_string(&token_file)
                 .await
                 .context("Failed to read token file")?;
-            serde_json::from_str(&content).unwrap_or_else(|_| Tokens {
+            serde_json::from_str(&content).unwrap_or_else(|_| TokenFile {
                 access_token: None,
-                refresh_token: None,
-                expires_at: None,
+                expires_in: None,
+                issued_at: None,
             })
         } else {
             return Err(anyhow::anyhow!(
@@ -132,18 +150,31 @@ impl EgnyteAPIClient {
             ));
         };
 
-        let access_token = tokens.access_token.clone();
-        let token_expires_at = tokens.expires_at.map(|exp| {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            if exp > now {
-                Instant::now() + Duration::from_secs(exp - now)
-            } else {
-                Instant::now() // Already expired
-            }
-        });
+        // Refresh token is in keyring (Python stores it there)
+        let _refresh_token = get_refresh_token_from_keyring()?;
+        if _refresh_token.is_none() {
+            return Err(anyhow::anyhow!(
+                "No refresh token in keyring. Please run 'egnyte-cli auth login'"
+            ));
+        }
+
+        let access_token = token_data.access_token.clone();
+        let token_expires_at = token_data
+            .issued_at
+            .and_then(|issued| {
+                token_data.expires_in.map(|expires_in| {
+                    let expires_at_secs = issued as u64 + expires_in;
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    if expires_at_secs > now {
+                        Instant::now() + Duration::from_secs(expires_at_secs - now)
+                    } else {
+                        Instant::now() // Already expired
+                    }
+                })
+            });
 
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -186,26 +217,12 @@ impl EgnyteAPIClient {
 
     /// Refresh the access token
     async fn refresh_token(&self) -> Result<()> {
-        let token_file = self.config_dir.join("tokens.json");
-        let tokens: Tokens = if token_file.exists() {
-            let content = tokio::fs::read_to_string(&token_file)
-                .await
-                .context("Failed to read token file")?;
-            serde_json::from_str(&content).unwrap_or_else(|_| Tokens {
-                access_token: None,
-                refresh_token: None,
-                expires_at: None,
-            })
-        } else {
-            return Err(anyhow::anyhow!("No tokens found"));
-        };
+        let refresh_token = get_refresh_token_from_keyring()?
+            .context("No refresh token in keyring. Please run 'egnyte-cli auth login'")?;
 
-        let refresh_token = tokens
-            .refresh_token
-            .clone()
-            .context("No refresh token available. Please run 'egnyte-cli auth login'")?;
+        let client_secret = get_client_secret_from_keyring()?
+            .context("No client_secret in keyring. Run: egnyte-cli config set client_secret YOUR_SECRET")?;
 
-        // Load client_id and client_secret from config
         let config_file = self.config_dir.join("config.json");
         let config: Config = if config_file.exists() {
             let content = tokio::fs::read_to_string(&config_file)
@@ -220,14 +237,13 @@ impl EgnyteAPIClient {
             .client_id
             .context("Client ID not configured")?;
 
-        // For now, we'll try to use the refresh token endpoint
-        // Note: In production, you might need to handle client_secret from keyring
         let refresh_url = format!("https://{}.egnyte.com/puboauth/token", self.domain);
-        
+
         let params = [
             ("grant_type", "refresh_token"),
-            ("refresh_token", &refresh_token),
-            ("client_id", &client_id),
+            ("refresh_token", refresh_token.as_str()),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
         ];
 
         let response = self
@@ -260,24 +276,28 @@ impl EgnyteAPIClient {
             .and_then(|v| v.as_u64())
             .unwrap_or(3600);
 
-        let expires_at = SystemTime::now()
+        let issued_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs()
-            + expires_in;
+            .as_secs() as i64;
 
-        // Update tokens
-        let new_tokens = Tokens {
-            access_token: Some(new_access_token.clone()),
-            refresh_token: token_data
-                .get("refresh_token")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or(tokens.refresh_token),
-            expires_at: Some(expires_at),
+        // Save tokens in Python format (access_token, expires_in, issued_at)
+        #[derive(serde::Serialize)]
+        struct TokenFileOut {
+            access_token: String,
+            expires_in: u64,
+            #[serde(rename = "token_type")]
+            token_type: String,
+            issued_at: i64,
+        }
+        let new_tokens = TokenFileOut {
+            access_token: new_access_token.clone(),
+            expires_in,
+            token_type: "Bearer".to_string(),
+            issued_at,
         };
 
-        // Save updated tokens
+        let token_file = self.config_dir.join("tokens.json");
         let token_json = serde_json::to_string_pretty(&new_tokens)
             .context("Failed to serialize tokens")?;
         tokio::fs::write(&token_file, token_json)

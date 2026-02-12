@@ -36,16 +36,15 @@ fn main() -> Result<()> {
     let fs = EgnyteFuse::new(api_client)?;
 
     // Mount options: writeback cache, parallel dirops
+    // Note: AutoUnmount would require 'user_allow_other' in /etc/fuse.conf - omit for compatibility
     let options = vec![
         MountOption::RW,
         MountOption::FSName("egnyte".to_string()),
         MountOption::Subtype("egnyte-fuse".to_string()),
-        MountOption::AllowOther,
-        MountOption::AutoUnmount,
     ];
 
     println!("Mounting Egnyte filesystem at {}...", mountpoint);
-    println!("Press Ctrl+C to unmount");
+    println!("Press Ctrl+C to unmount (then run: fusermount -u {})", mountpoint);
 
     // Mount the filesystem (this blocks until unmounted)
     fuser::mount2(fs, mount_path, &options)?;
